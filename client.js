@@ -19,6 +19,17 @@ window.__ModuleLoader__.load({id:'dsh-project-modes',factory:(require)=>{
   .dsh-modes-panel button:disabled,.dsh-modes-panel select:disabled{opacity:.5;cursor:wait}
   .dsh-modes-error{color:#d34545!important}.dsh-modes-estimate{border-top:1px solid #8883;padding-top:8px;margin-top:10px}
   .dsh-modes-chip:focus-visible,.dsh-modes-panel :focus-visible{outline:2px solid #4889ff;outline-offset:2px}
+  .dsh-modes-sets{border:0;margin:10px 0 0;padding:0}
+  .dsh-modes-sets legend{display:flex;width:100%;align-items:center;justify-content:space-between;padding:0;font-weight:500}
+  .dsh-modes-combine{display:inline-flex!important;align-items:center;gap:5px;margin:0!important;font-weight:400!important;color:var(--dsw-alias-label-secondary,inherit);cursor:pointer}
+  .dsh-modes-combine input{margin:0;accent-color:#4889ff}
+  .dsh-modes-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px}
+  .dsh-modes-panel .dsh-modes-set{display:flex;align-items:center;gap:6px;text-align:left;padding:5px 8px;border-radius:8px;min-height:28px;line-height:1.25}
+  .dsh-modes-set .dsh-modes-mark{flex:none;display:inline-grid;place-items:center;width:14px;height:14px;border:1.5px solid #8888;font-size:10px;line-height:1}
+  .dsh-modes-set[role=radio] .dsh-modes-mark{border-radius:50%}.dsh-modes-set[role=checkbox] .dsh-modes-mark{border-radius:4px}
+  .dsh-modes-panel .dsh-modes-set[aria-checked=true]{border-color:#4889ff;background:#4889ff1a;color:var(--dsw-alias-state-business-primary,#3672cf);font-weight:600}
+  .dsh-modes-set[aria-checked=true] .dsh-modes-mark{border-color:#4889ff;background:#4889ff;color:#fff}
+  .dsh-modes-hint{font-size:11px}
   `;
   async function request(sessionId,change,signal) {
     const result=await fetch('/api/project-modes'+(change?'':'?sessionId='+encodeURIComponent(sessionId)),{
@@ -53,18 +64,43 @@ window.__ModuleLoader__.load({id:'dsh-project-modes',factory:(require)=>{
       finally{busyRef.current=false;setSaving(false);}
     };
     const state=data?.state,project=data?.projects.find(x=>x.id===state.project),workflow=data?.workflows.find(x=>x.id===state.workflow);
+    const max=data?.maxCombo ?? 1;
+    const chosen=state ? (Array.isArray(state.projects) && state.projects[0]===state.project ? state.projects : [state.project]) : [];
+    const labelOf=id=>data?.projects.find(x=>x.id===id)?.label ?? id;
+    // Default is one toolset (single choice). "Combine" switches the grid to multi-select, up to `max`.
+    const [combine,setCombine]=React.useState(false);
+    React.useEffect(()=>{if(chosen.length>1)setCombine(true);},[chosen.length]);
+    const choose=id=>{
+      if(!combine)return id===chosen[0] && chosen.length===1 ? undefined : update({project:id}); // single choice keeps the 1.4 request shape
+      if(chosen.includes(id))return chosen.length>1 ? update({projects:chosen.filter(x=>x!==id)}) : undefined;
+      if(id==='all' || chosen.includes('all'))return update({projects:[id]}); // All tools already covers everything
+      if(chosen.length<max)return update({projects:[...chosen,id]});
+    };
+    const toggleCombine=()=>{if(combine && chosen.length>1)update({projects:[chosen[0]]});setCombine(!combine);};
+    const chipText=state ? (chosen.length>1 ? `${labelOf(chosen[0])} +${chosen.length-1}` : project.label) : '';
     const disabled=saving || data?.busy;
     const estimate=state?.estimate;
     const availableGroups=data?.groups?.filter(group=>group.loaded>0) ?? [];
     const availableSkills=data?.skills ?? [];
     return h(React.Fragment,null,
-      h('button',{ref:button,type:'button',className:'dsh-modes-chip','aria-label':'Project tools and workflow','aria-expanded':open,'aria-haspopup':'dialog',title:data?`${project.label} · ${workflow.label} · ${state.stage}\n${data.counts.selected} tools available`:'Project tools and workflow',onClick:()=>{
+      h('button',{ref:button,type:'button',className:'dsh-modes-chip','aria-label':'Project tools and workflow','aria-expanded':open,'aria-haspopup':'dialog',title:data?`${chosen.map(labelOf).join(' + ')} · ${workflow.label} · ${state.stage}\n${data.counts.selected} tools available`:'Project tools and workflow',onClick:()=>{
         const r=button.current.getBoundingClientRect();setPosition({left:Math.max(12,Math.min(r.left,window.innerWidth-332)),bottom:window.innerHeight-r.top+8});setOpen(!open);
-      }},state?`${project.label} · ${state.stage[0].toUpperCase()+state.stage.slice(1)} ▾`:'Modes ▾'),
+      }},state?`${chipText} · ${state.stage[0].toUpperCase()+state.stage.slice(1)} ▾`:'Modes ▾'),
       open?h('section',{ref:panel,role:'dialog','aria-label':'Project tools and workflow',className:'dsh-modes-panel',style:position},
         h('header',null,'Project modes',h('button',{type:'button','aria-label':'Close project modes',onClick:()=>{setOpen(false);button.current?.focus();}},'×')),
         data?h(React.Fragment,null,
-          h('label',null,'Tools',h('select',{'aria-label':'Project toolset',value:state.project,disabled,onChange:e=>update({project:e.target.value})},data.projects.map(x=>h('option',{key:x.id,value:x.id},x.label)))),
+          h('fieldset',{className:'dsh-modes-sets'},
+            h('legend',null,h('span',null,combine?`Tools · ${chosen.length}/${max}`:'Tools'),
+              max>1?h('label',{className:'dsh-modes-combine',title:`Combine up to ${max} toolsets in this chat`},h('input',{type:'checkbox','aria-label':`Combine up to ${max} toolsets`,checked:combine,disabled,onChange:toggleCombine}),`Combine (max ${max})`):null),
+            h('div',{className:'dsh-modes-grid',role:combine?'group':'radiogroup','aria-label':'Project toolsets'},data.projects.map(x=>{
+              const on=chosen.includes(x.id),at=chosen.indexOf(x.id);
+              const full=combine && !on && chosen.length>=max && x.id!=='all' && !chosen.includes('all');
+              // In a combo the mark shows the selection order (1 = primary); the label stays readable in a 2-column grid.
+              const order=combine && on && chosen.length>1;
+              return h('button',{key:x.id,type:'button',role:combine?'checkbox':'radio','aria-checked':on,className:'dsh-modes-set',disabled:disabled || full,title:full?`Up to ${max} toolsets; remove one first`:order?`${at===0?'Primary':'Added #'+(at+1)} · ${x.description}`:x.description,onClick:()=>choose(x.id)},
+                h('span',{className:'dsh-modes-mark','aria-hidden':true},on?(order?String(at+1):combine?'✓':'●'):''),x.label);
+            })),
+            combine?h('p',{className:'dsh-modes-hint'},chosen.length>=max?`Maximum ${max} reached. Untick one to swap.`:`Tick up to ${max}; their tools load together.`):null),
           availableGroups.length ? h('p',{'aria-label':'Available tool integrations'},'Available: '+availableGroups.map(group=>group.label).join(' · ')) : null,
           availableSkills.length ? h('p',{'aria-label':'Available skills'},'Skills: '+availableSkills.map(skill=>skill.label+' ('+skill.name+')').join(' · ')) : null,
           h('label',null,'Workflow',h('select',{'aria-label':'Workflow stages',value:state.workflow,disabled,onChange:e=>update({workflow:e.target.value})},data.workflows.map(x=>h('option',{key:x.id,value:x.id},x.label)))),

@@ -20,7 +20,8 @@ export const specialistInProject = (name,project) => familiesForTool(name).some(
 export const familySearchText = name => familiesForTool(name).map(family=>family.keywords).join(' ').toLowerCase();
 export function integrationGroups(tools,state,allowsTool) {
   const catalog=[...new Map(tools.map(tool=>[tool.name,tool])).values()];
-  return TOOL_FAMILIES.filter(family=>state.project==='all' || family.projects.includes(state.project)).map(({id,label,support=false,pattern})=>{
+  const projects=Array.isArray(state.projects) && state.projects.length ? state.projects : [state.project];
+  return TOOL_FAMILIES.filter(family=>projects.some(project=>project==='all' || family.projects.includes(project))).map(({id,label,support=false,pattern})=>{
     const members=catalog.filter(tool=>pattern.test(tool.name));
     return {id,label,support,registered:members.length,loaded:members.filter(tool=>allowsTool(tool.name,state)).length,registrationOnly:true};
   });

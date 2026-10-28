@@ -1,5 +1,7 @@
 # DSH Project Modes — a toolset + workflow picker for DeepSeek Harness
 
+_Version 1.5.0 · 49 tests_
+
 A small plugin for [DeepSeek Harness (DSH)](https://www.npmjs.com/package/@deepseek-ai/dsh) web that adds a
 compact **`General · Plan ▾`** button beside the prompt box. Open it to choose:
 
@@ -8,6 +10,28 @@ compact **`General · Plan ▾`** button beside the prompt box. Open it to choos
 - **Workflow** — Research → Plan → Act, Plan → Act (default), Act, or Research → Ask → Plan → Act.
 
 Selections belong to the current chat, persist across restarts, and can change between responses.
+
+### New in 1.5: combine up to 3 toolsets
+
+![Combined picker](media/combo-picker.jpg)
+
+By default the picker is single-choice: one toolset per chat, exactly as in 1.4. Tick **Combine (max 3)**
+and the grid becomes multi-select:
+
+- pick up to **three** toolsets (e.g. Video editing + Images / SVG / PDF + Video gen); the chat loads the
+  **union** of their tools — 31 of 126 tools in that example instead of all 126;
+- stage rules still apply to every member (Research / Ask / Plan stay read-only; Act unlocks changes);
+- the chip shows the primary plus a count (`Video editing +2 · Act ▾`), and the ticks are numbered 1–3 in
+  selection order; a fourth toolset is disabled until you untick one; **All tools** must be chosen alone;
+- `project_tools` searches across every selected toolset; enabled extras survive a combo change only while
+  they remain discoverable;
+- the model's guidance lists every combined toolset and loads each one's specialist rules.
+
+API: `POST /api/project-modes` accepts `projects: ["video-edit","image-docs","video"]` (1–3). The 1.4 field
+`project` still works, and single choices still send it, so an older server keeps working with the new client.
+State gains `projects` (with `project` = the primary); older saved states are read as single-toolset.
+
+Demo video (46 s, real policy numbers): see the [v1.5.0 release](https://github.com/gank8818-bit/dsh-project-modes/releases/tag/v1.5.0).
 
 ## Why
 

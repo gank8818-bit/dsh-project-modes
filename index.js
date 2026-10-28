@@ -3,7 +3,7 @@ import {dirname,join} from 'node:path';
 import {homedir} from 'node:os';
 import {defineTool} from '@deepseek-ai/dsh-tools';
 import {createScope,scopeParentOf} from '@deepseek-ai/dsh-scope';
-import {PROJECTS,WORKFLOWS,DEFAULTS,freshState,allowsTool,discoverableInProject,searchTools,advanceState,validateEstimate,guidance,editorIntegrations,projectCatalog,projectIntegrations,projectSkills,searchProjectSkills,PROJECT_SKILLS,VERSION,toolDenial} from './policy.js';
+import {PROJECTS,WORKFLOWS,DEFAULTS,MAX_COMBO,projectsOf,normalizeProjects,discoverable,readOnlyProjects,freshState,allowsTool,discoverableInProject,searchTools,advanceState,validateEstimate,guidance,editorIntegrations,projectCatalog,projectIntegrations,projectSkills,searchProjectSkills,PROJECT_SKILLS,VERSION,toolDenial} from './policy.js';
 
 export const name='project-modes';
 export const inject=['agents','tools','systemPrompt'];
@@ -19,7 +19,7 @@ export function apply(ctx,config={}) {
   const bindings=new Map();
   const availableTools=agent=>[...new Map([...agent.ctx.tools.schemas(scopeParentOf(agent)),...agent.ctx.tools.schemas(agent)].map(tool=>[tool.name,tool])).values()];
   let refreshing=false,queued=false,disposed=false;
-  const selected=agent=>database.sessions[agent.id] || freshState();
+  const selected=agent=>{const s=database.sessions[agent.id];return s ? {...s,projects:projectsOf(s)} : freshState();};
   const commit=(agent,state)=>{
     const previous=database.sessions[agent.id];
     database.sessions[agent.id]=state;
@@ -103,17 +103,18 @@ export function apply(ctx,config={}) {
     execute:async(args,exec)=>{
       const agent=exec.agent;if(!agent)throw Error('A live session is required.');
       const state=selected(agent),available=availableTools(agent);
-      const eligible=available.filter(t=>discoverableInProject(t.name,state.project));
+      const eligible=available.filter(t=>discoverable(t.name,state));
       if(args.action==='inspect') {
-        if(!Array.isArray(args.names) || !args.names.length || args.names.length>3 || args.names.some(name=>!eligible.some(tool=>tool.name===name)))throw Error('Inspect 1–3 exact tool names within the selected project.');
+        if(!Array.isArray(args.names) || !args.names.length || args.names.length>3 || args.names.some(name=>!eligible.some(tool=>tool.name===name)))throw Error('Inspect 1–3 exact tool names within the selected project toolsets.');
         const tools=args.names.map(name=>{const tool=eligible.find(tool=>tool.name===name);return {name:tool.name,description:tool.description,parameters:tool.parameters??tool.inputSchema};});
-        return {status:JSON.stringify({pluginVersion:VERSION,project:state.project,stage:state.stage,tools})};
+        return {status:JSON.stringify({pluginVersion:VERSION,project:state.project,projects:projectsOf(state),stage:state.stage,tools})};
       }
       if(args.action==='search') {
         const matches=searchTools(available,args.query,state);
-        return {status:JSON.stringify({pluginVersion:VERSION,category:projectCatalog(available,installedSkills()).find(project=>project.id===state.project),project:state.project,stage:state.stage,revision:state.revision,matches,skillMatches:searchProjectSkills(args.query,state,installedSkills())})};
+        const categories=projectCatalog(available,installedSkills()).filter(project=>projectsOf(state).includes(project.id));
+        return {status:JSON.stringify({pluginVersion:VERSION,category:categories.find(project=>project.id===state.project),categories,project:state.project,projects:projectsOf(state),stage:state.stage,revision:state.revision,matches,skillMatches:searchProjectSkills(args.query,state,installedSkills())})};
       }
-      if(state.stage!=='act' || state.project==='research')throw Error('Additional execution tools are available only in Act.');
+      if(state.stage!=='act' || readOnlyProjects(state))throw Error('Additional execution tools are available only in Act.');
       if(args.revision!==state.revision)throw Error('Workflow changed; refresh project_stage status.');
       if(args.action==='clear' || args.action==='disable') {
         if(args.action==='disable' && (!Array.isArray(args.names) || !args.names.length || args.names.length>12 || args.names.some(name=>!(state.enabled??[]).includes(name))))throw Error('Choose exact currently enabled extras to disable.');
@@ -122,17 +123,17 @@ export function apply(ctx,config={}) {
         const updated={...state,enabled,revision:state.revision+1};commit(agent,updated);
         return {status:JSON.stringify({revision:updated.revision,enabled,availableOnNextRequest:true})};
       }
-      if(!Array.isArray(args.names) || !args.names.length || args.names.length>8 || args.names.some(n=>!eligible.some(t=>t.name===n)))throw Error('Choose 1–8 exact available names within this project.');
+      if(!Array.isArray(args.names) || !args.names.length || args.names.length>8 || args.names.some(n=>!eligible.some(t=>t.name===n)))throw Error('Choose 1–8 exact available names within this project (selected toolsets).');
       const requested=new Set(args.names);
       const enabled=[...(state.enabled??[]).filter(n=>!requested.has(n)),...requested].slice(-12);
       const updated={...state,enabled,revision:state.revision+1};commit(agent,updated);
       return {status:JSON.stringify({revision:updated.revision,enabled,availableOnNextRequest:true})};
     },
   })));
-  const catalog=()=>({version:VERSION,projects:PROJECTS,workflows:WORKFLOWS,defaults:DEFAULTS});
+  const catalog=()=>({version:VERSION,projects:PROJECTS,workflows:WORKFLOWS,defaults:DEFAULTS,maxCombo:MAX_COMBO});
   function snapshot(agent) {
     const state=selected(agent),all=availableTools(agent);
-    return {...catalog(),projects:projectCatalog(all,installedSkills()),skills:projectSkills(state,installedSkills()),groups:projectIntegrations(all,state),registrationOnly:true,state,busy:agent.status!=='idle',counts:{selected:all.filter(t=>allowsTool(t.name,state)).length,total:all.length},integrations:editorIntegrations(all,state),specialists:all.filter(t=>!allowsTool(t.name,{...state,project:'general',stage:'act'}) && allowsTool(t.name,{...state,stage:'act'})).map(t=>t.name)};
+    return {...catalog(),projects:projectCatalog(all,installedSkills()),skills:projectSkills(state,installedSkills()),groups:projectIntegrations(all,state),registrationOnly:true,state,busy:agent.status!=='idle',counts:{selected:all.filter(t=>allowsTool(t.name,state)).length,total:all.length},integrations:editorIntegrations(all,state),specialists:all.filter(t=>!allowsTool(t.name,{...state,project:'general',projects:['general'],stage:'act'}) && allowsTool(t.name,{...state,stage:'act'})).map(t=>t.name)};
   }
   async function audit() {
     const sample=ctx.agents.list()[0];
@@ -176,7 +177,7 @@ export function apply(ctx,config={}) {
         const agent=ctx.agents.get(url.searchParams.get('sessionId')) || ctx.agents.list()[0];
         if(!agent)return send(503,{error:'Open a DSH session before inspecting tool categories.'});
         const all=availableTools(agent),state=selected(agent);
-        return send(200,{runtimePid:process.pid,version:VERSION,categories:projectCatalog(all,installedSkills()),current:{project:state.project,stage:state.stage,groups:projectIntegrations(all,state),skills:projectSkills(state,installedSkills())},registrationOnly:true});
+        return send(200,{runtimePid:process.pid,version:VERSION,categories:projectCatalog(all,installedSkills()),current:{project:state.project,projects:projectsOf(state),stage:state.stage,groups:projectIntegrations(all,state),skills:projectSkills(state,installedSkills())},registrationOnly:true});
       }
       if(req.method==='GET' && url.pathname==='/api/project-modes/integrations') {
         const agent=ctx.agents.get(url.searchParams.get('sessionId')) || ctx.agents.list()[0];
@@ -194,16 +195,22 @@ export function apply(ctx,config={}) {
       if(req.method!=='POST')return send(405,{error:'Method not allowed.'});
       let raw='';for await(const part of req){raw+=part;if(Buffer.byteLength(raw)>16384)return send(413,{error:'Request too large.'});}
       const body=JSON.parse(raw);
-      if(Object.keys(body).some(k=>!['sessionId','revision','project','workflow','reset'].includes(k)))return send(400,{error:'Unknown setting.'});
+      if(Object.keys(body).some(k=>!['sessionId','revision','project','projects','workflow','reset'].includes(k)))return send(400,{error:'Unknown setting.'});
       const agent=ctx.agents.get(body.sessionId);
       if(!agent)return send(404,{error:'This session is not active.'});
       if(agent.status!=='idle')return send(409,{error:'Wait for the current response to finish before switching modes.'});
       const current=selected(agent);
       if(body.revision!==current.revision)return send(409,{error:'Modes changed in another window. Reopen the control.'});
       if(body.reset!==undefined && typeof body.reset!=='boolean')return send(400,{error:'Invalid reset value.'});
-      const project=body.project??current.project,workflow=body.workflow??current.workflow;
-      const initial=freshState({project,workflow});
-      const state=workflow!==current.workflow || body.reset ? {...initial,revision:current.revision+1} : {...current,project,enabled:project===current.project ? current.enabled??[] : [],revision:current.revision+1};
+      if(body.project!==undefined && body.projects!==undefined)return send(400,{error:'Send project or projects, not both.'});
+      // `project` (single) stays supported for older clients; `projects` selects a combo of 1–MAX_COMBO.
+      const projects=normalizeProjects(body.projects ?? (body.project!==undefined ? [body.project] : projectsOf(current)));
+      const workflow=body.workflow??current.workflow;
+      const initial=freshState({projects,workflow});
+      const same=projects.length===projectsOf(current).length && projects.every((id,i)=>id===projectsOf(current)[i]);
+      // Enabled extras survive only while still discoverable in the new combination.
+      const enabled=same ? current.enabled??[] : (current.enabled??[]).filter(name=>discoverable(name,{project:projects[0],projects}));
+      const state=workflow!==current.workflow || body.reset ? {...initial,revision:current.revision+1} : {...current,project:projects[0],projects,enabled,revision:current.revision+1};
       commit(agent,state);attach(agent);
       return send(200,snapshot(agent));
     } catch(e) {return send(400,{error:e.message || 'Could not update project modes.'});}
